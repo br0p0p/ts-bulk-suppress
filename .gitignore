@@ -71,4 +71,5 @@ build
 lib
 temp
 dist
-build_*package-lock.json
+build_*
+package-lock.json
