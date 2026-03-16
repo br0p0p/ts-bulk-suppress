@@ -346,7 +346,9 @@ export function deduplicateSuppressors(suppressors: BulkSuppressor[]): BulkSuppr
     return false;
   });
 
-  return uniqueSuppressors;
+  return uniqueSuppressors.sort(
+    (a, b) => a.filename.localeCompare(b.filename) || a.scopeId.localeCompare(b.scopeId) || a.code - b.code
+  );
 }
 
 export function getBulkConfig(options: ProgramOptions): {
