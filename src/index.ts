@@ -133,6 +133,23 @@ function main(options: ProgramOptions): void {
     projectStat
   );
 
+  if (options.checkStale && process.exitCode === 0 && !options.changed && !options.files?.length) {
+    const staleItems = projectStat.statItems.filter((item) => item.total === 0);
+    if (staleItems.length) {
+      log.info(`\nFound ${staleItems.length} stale suppressor(s) that no longer match any errors:`);
+      for (const item of staleItems) {
+        if (item.type === 'bulk') {
+          log.info(`  bulk: ${item.filename} ${item.scopeId} TS${item.code}`);
+        } else {
+          const codeStr = item.code === -1 ? '*' : String(item.code);
+          log.info(`  pattern: ${item.pathRegExp} code=${codeStr}`);
+        }
+      }
+      log.info('\nRemove stale suppressors or run with --gen-bulk-suppress to regenerate.');
+      process.exitCode = 3;
+    }
+  }
+
   if (mergedConfig.stat) {
     writeJSONSync(mergedConfig.stat, projectStat, { spaces: 2 });
   }
@@ -147,6 +164,7 @@ program
   .option('--gen-bulk-suppress', 'Patch bulk-suppressor for current project')
   .option('--ignore-config-error', 'Ignore config-related errors')
   .option('--ignore-external-error', 'Ignore external errors')
+  .option('--check-stale', 'Exit with error if any suppressors match zero diagnostics')
   // .option(
   //   '-c, --compiler <path>',
   //   'Path to typescript.js. By default, uses `node_modules/typescript/lib/typescript.js`.',

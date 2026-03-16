@@ -13,6 +13,7 @@ export type ProgramOptions = {
   ignoreExternalError?: boolean;
   strictScope?: boolean;
   genBulkSuppress: boolean;
+  checkStale?: boolean;
   files?: string[];
 };
 

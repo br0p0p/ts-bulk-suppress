@@ -1,6 +1,6 @@
 import path from 'path';
 import { execSync } from 'child_process';
-import { rmSync, existsSync, readJsonSync } from 'fs-extra';
+import { rmSync, existsSync, readJsonSync, writeJsonSync } from 'fs-extra';
 import { deduplicateSuppressors } from '../src/tsc-bulk';
 
 describe('App pass test', () => {
@@ -99,5 +99,77 @@ describe('Deterministic suppression output', () => {
     const second = readJsonSync(bulkConfigPath);
 
     expect(first).toEqual(second);
+  });
+});
+
+describe('--check-stale flag', () => {
+  const toolScriptPath = path.resolve(__dirname, '../dist/index.js');
+  const appDir = path.resolve(__dirname, 'fixtures', 'node');
+  const bulkConfigPath = path.resolve(appDir, '.ts-bulk-suppressions.json');
+
+  afterEach(() => {
+    if (existsSync(bulkConfigPath)) rmSync(bulkConfigPath);
+  });
+
+  it('exits 0 when no stale suppressors exist', () => {
+    execSync(`node ${toolScriptPath} --gen-bulk-suppress`, { cwd: appDir });
+    expect(() =>
+      execSync(`node ${toolScriptPath} --check-stale --ignore-external-error`, { cwd: appDir })
+    ).not.toThrow();
+  });
+
+  it('exits non-zero when stale suppressors exist', () => {
+    execSync(`node ${toolScriptPath} --gen-bulk-suppress`, { cwd: appDir });
+    const config = readJsonSync(bulkConfigPath);
+    config.bulkSuppressors.push({
+      filename: 'nonexistent.ts',
+      scopeId: '.fake',
+      code: 9999
+    });
+    writeJsonSync(bulkConfigPath, config, { spaces: 2 });
+
+    expect(() =>
+      execSync(`node ${toolScriptPath} --check-stale --ignore-external-error`, { cwd: appDir })
+    ).toThrow();
+  });
+
+  it('output lists stale suppressor details', () => {
+    execSync(`node ${toolScriptPath} --gen-bulk-suppress`, { cwd: appDir });
+    const config = readJsonSync(bulkConfigPath);
+    config.bulkSuppressors.push({
+      filename: 'nonexistent.ts',
+      scopeId: '.fake',
+      code: 9999
+    });
+    writeJsonSync(bulkConfigPath, config, { spaces: 2 });
+
+    try {
+      execSync(`node ${toolScriptPath} --check-stale --ignore-external-error`, {
+        cwd: appDir,
+        encoding: 'utf-8'
+      });
+      fail('Expected command to throw');
+    } catch (e: unknown) {
+      const err = e as { stdout?: string; stderr?: string };
+      const output = (err.stdout || '') + (err.stderr || '');
+      expect(output).toContain('nonexistent.ts');
+      expect(output).toContain('9999');
+      expect(output).toContain('stale');
+    }
+  });
+
+  it('skips stale check in partial file mode', () => {
+    execSync(`node ${toolScriptPath} --gen-bulk-suppress`, { cwd: appDir });
+    const config = readJsonSync(bulkConfigPath);
+    config.bulkSuppressors.push({
+      filename: 'nonexistent.ts',
+      scopeId: '.fake',
+      code: 9999
+    });
+    writeJsonSync(bulkConfigPath, config, { spaces: 2 });
+
+    expect(() =>
+      execSync(`node ${toolScriptPath} --check-stale --ignore-external-error index.ts`, { cwd: appDir })
+    ).not.toThrow();
   });
 });
