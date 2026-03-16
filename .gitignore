@@ -72,4 +72,3 @@ lib
 temp
 dist
 build_*
-package-lock.json
