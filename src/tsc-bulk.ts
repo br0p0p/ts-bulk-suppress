@@ -359,7 +359,9 @@ export function getBulkConfig(options: ProgramOptions): {
     options.config ?? findConfigFile(process.cwd(), ts.sys.fileExists, '.ts-bulk-suppressions.json');
 
   if (!configPath || !existsSync(configPath)) {
-    if (options.genBulkSuppress) {
+    const shouldAutoCreate =
+      options.genBulkSuppress || options.subcommand === 'suppress' || options.subcommand === 'update';
+    if (shouldAutoCreate) {
       const tsconfigFilePath = findConfigFile(process.cwd(), ts.sys.fileExists, 'tsconfig.json');
       if (!tsconfigFilePath || !existsSync(tsconfigFilePath)) {
         throw Error(
@@ -382,7 +384,7 @@ export function getBulkConfig(options: ProgramOptions): {
       };
     }
     throw Error(
-      'Unable to locate .ts-bulk-suppressions.json. cd to your where your tsconfig.json locates and run npx ts-bulk-suppress --create-default.'
+      'Unable to locate .ts-bulk-suppressions.json. cd to your project root and run "npx ts-bulk-suppress init".'
     );
   }
 
