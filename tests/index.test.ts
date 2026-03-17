@@ -1,6 +1,6 @@
 import path from 'path';
 import { execSync } from 'child_process';
-import { readFileSync, rmSync, existsSync } from 'fs-extra';
+import { readFileSync, rmSync, existsSync, writeJSONSync } from 'fs-extra';
 import { deduplicateSuppressors } from '../src/tsc-bulk';
 import type { BulkSuppressor } from '../src/types';
 
@@ -92,5 +92,167 @@ describe('Suppression output idempotency', () => {
     const secondRun = readFileSync(bulkConfigPath, 'utf-8');
 
     expect(firstRun).toBe(secondRun);
+  });
+});
+
+describe('Subcommand: suppress', () => {
+  const toolScriptPath = path.resolve(__dirname, '../dist/index.js');
+  const appDir = path.resolve(__dirname, 'fixtures', 'node');
+  const bulkConfigPath = path.resolve(appDir, '.ts-bulk-suppressions.json');
+
+  afterEach(() => {
+    if (existsSync(bulkConfigPath)) rmSync(bulkConfigPath);
+  });
+
+  it('generates suppressions via subcommand', () => {
+    execSync(`node ${toolScriptPath} init`, { cwd: appDir });
+    execSync(`node ${toolScriptPath} suppress`, { cwd: appDir });
+    expect(existsSync(bulkConfigPath)).toBe(true);
+    const content = JSON.parse(readFileSync(bulkConfigPath, 'utf-8'));
+    expect(content.bulkSuppressors.length).toBeGreaterThan(0);
+  });
+
+  it('produces same output as deprecated --gen-bulk-suppress', () => {
+    execSync(`node ${toolScriptPath} init`, { cwd: appDir });
+    execSync(`node ${toolScriptPath} suppress`, { cwd: appDir });
+    const subcommandResult = readFileSync(bulkConfigPath, 'utf-8');
+    rmSync(bulkConfigPath);
+    execSync(`node ${toolScriptPath} --gen-bulk-suppress`, { cwd: appDir });
+    const flagResult = readFileSync(bulkConfigPath, 'utf-8');
+    expect(subcommandResult).toBe(flagResult);
+  });
+});
+
+describe('Subcommand: init', () => {
+  const toolScriptPath = path.resolve(__dirname, '../dist/index.js');
+  const appDir = path.resolve(__dirname, 'fixtures', 'node');
+  const bulkConfigPath = path.resolve(appDir, '.ts-bulk-suppressions.json');
+
+  afterEach(() => {
+    if (existsSync(bulkConfigPath)) rmSync(bulkConfigPath);
+  });
+
+  it('creates default config via subcommand', () => {
+    execSync(`node ${toolScriptPath} init`, { cwd: appDir });
+    expect(existsSync(bulkConfigPath)).toBe(true);
+    const content = JSON.parse(readFileSync(bulkConfigPath, 'utf-8'));
+    expect(content.bulkSuppressors).toEqual([]);
+    expect(content.patternSuppressors).toEqual([]);
+  });
+});
+
+describe('Subcommand: check', () => {
+  const toolScriptPath = path.resolve(__dirname, '../dist/index.js');
+  const appDir = path.resolve(__dirname, 'fixtures', 'node');
+  const bulkConfigPath = path.resolve(appDir, '.ts-bulk-suppressions.json');
+
+  afterEach(() => {
+    if (existsSync(bulkConfigPath)) rmSync(bulkConfigPath);
+  });
+
+  it('exits 0 when suppressions are in sync', () => {
+    execSync(`node ${toolScriptPath} init`, { cwd: appDir });
+    execSync(`node ${toolScriptPath} suppress`, { cwd: appDir });
+    execSync(`node ${toolScriptPath} check --ignore-external-error`, { cwd: appDir });
+  });
+
+  it('exits 3 when stale suppressions exist', () => {
+    execSync(`node ${toolScriptPath} init`, { cwd: appDir });
+    execSync(`node ${toolScriptPath} suppress`, { cwd: appDir });
+
+    const config = JSON.parse(readFileSync(bulkConfigPath, 'utf-8'));
+    config.bulkSuppressors.push({
+      filename: 'nonexistent.ts',
+      scopeId: '.fake',
+      code: 9999
+    });
+    writeJSONSync(bulkConfigPath, config, { spaces: 2 });
+
+    try {
+      execSync(`node ${toolScriptPath} check --ignore-external-error`, { cwd: appDir });
+      fail('Expected exit code 3');
+    } catch (e: unknown) {
+      expect((e as { status: number }).status).toBe(3);
+    }
+  });
+
+  it('exits 2 when unsuppressed errors exist (takes priority)', () => {
+    execSync(`node ${toolScriptPath} init`, { cwd: appDir });
+    try {
+      execSync(`node ${toolScriptPath} check`, { cwd: appDir });
+      fail('Expected non-zero exit');
+    } catch (e: unknown) {
+      expect((e as { status: number }).status).toBe(2);
+    }
+  });
+});
+
+describe('Subcommand: trim', () => {
+  const toolScriptPath = path.resolve(__dirname, '../dist/index.js');
+  const appDir = path.resolve(__dirname, 'fixtures', 'node');
+  const bulkConfigPath = path.resolve(appDir, '.ts-bulk-suppressions.json');
+
+  afterEach(() => {
+    if (existsSync(bulkConfigPath)) rmSync(bulkConfigPath);
+  });
+
+  it('removes stale suppressors from config file', () => {
+    execSync(`node ${toolScriptPath} init`, { cwd: appDir });
+    execSync(`node ${toolScriptPath} suppress`, { cwd: appDir });
+    const before = JSON.parse(readFileSync(bulkConfigPath, 'utf-8'));
+    const originalCount = before.bulkSuppressors.length;
+
+    before.bulkSuppressors.push({
+      filename: 'nonexistent.ts',
+      scopeId: '.fake',
+      code: 9999
+    });
+    writeJSONSync(bulkConfigPath, before, { spaces: 2 });
+
+    execSync(`node ${toolScriptPath} trim --ignore-external-error`, { cwd: appDir });
+    const after = JSON.parse(readFileSync(bulkConfigPath, 'utf-8'));
+    expect(after.bulkSuppressors.length).toBe(originalCount);
+    expect(
+      after.bulkSuppressors.find((s: BulkSuppressor) => s.filename === 'nonexistent.ts')
+    ).toBeUndefined();
+  });
+});
+
+describe('Subcommand: update', () => {
+  const toolScriptPath = path.resolve(__dirname, '../dist/index.js');
+  const appDir = path.resolve(__dirname, 'fixtures', 'node');
+  const bulkConfigPath = path.resolve(appDir, '.ts-bulk-suppressions.json');
+
+  afterEach(() => {
+    if (existsSync(bulkConfigPath)) rmSync(bulkConfigPath);
+  });
+
+  it('removes stale suppressors while keeping valid ones', () => {
+    execSync(`node ${toolScriptPath} init`, { cwd: appDir });
+    execSync(`node ${toolScriptPath} suppress`, { cwd: appDir });
+    const before = JSON.parse(readFileSync(bulkConfigPath, 'utf-8'));
+    const originalCount = before.bulkSuppressors.length;
+
+    before.bulkSuppressors.push({
+      filename: 'nonexistent.ts',
+      scopeId: '.fake',
+      code: 9999
+    });
+    writeJSONSync(bulkConfigPath, before, { spaces: 2 });
+
+    execSync(`node ${toolScriptPath} update --ignore-external-error`, { cwd: appDir });
+    const after = JSON.parse(readFileSync(bulkConfigPath, 'utf-8'));
+
+    expect(after.bulkSuppressors.length).toBe(originalCount);
+    expect(
+      after.bulkSuppressors.find((s: BulkSuppressor) => s.filename === 'nonexistent.ts')
+    ).toBeUndefined();
+  });
+
+  it('check passes after update', () => {
+    execSync(`node ${toolScriptPath} init`, { cwd: appDir });
+    execSync(`node ${toolScriptPath} suppress`, { cwd: appDir });
+    execSync(`node ${toolScriptPath} update --ignore-external-error`, { cwd: appDir });
+    execSync(`node ${toolScriptPath} check --ignore-external-error`, { cwd: appDir });
   });
 });
