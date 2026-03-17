@@ -434,6 +434,10 @@ export function initStatItem(configFromFile: BulkConfig): StatisticsItem[] {
   return [...bulkStats, ...patternStats];
 }
 
+export function findStaleSuppressors(statItems: StatisticsItem[]): StatisticsItem[] {
+  return statItems.filter((item) => item.total === 0);
+}
+
 /**
  *
  * @param should returnabsolute
