@@ -438,6 +438,34 @@ export function findStaleSuppressors(statItems: StatisticsItem[]): StatisticsIte
   return statItems.filter((item) => item.total === 0);
 }
 
+export function trimStaleSuppressors(config: BulkConfig, statItems: StatisticsItem[]): BulkConfig {
+  const staleBulkKeys = new Set(
+    statItems
+      .filter((s) => s.type === 'bulk' && s.total === 0)
+      .map((s) => {
+        if (s.type !== 'bulk') throw Error('unreachable');
+        return `${s.filename}.${s.scopeId}.${s.code}`;
+      })
+  );
+
+  const stalePatternRegExps = new Set(
+    config.patternSuppressors
+      .filter((p) => {
+        const relatedStats = statItems.filter((s) => s.type === 'pattern' && s.pathRegExp === p.pathRegExp);
+        return relatedStats.length > 0 && relatedStats.every((s) => s.total === 0);
+      })
+      .map((p) => p.pathRegExp)
+  );
+
+  return {
+    ...config,
+    bulkSuppressors: config.bulkSuppressors.filter(
+      (b) => !staleBulkKeys.has(`${b.filename}.${b.scopeId}.${b.code}`)
+    ),
+    patternSuppressors: config.patternSuppressors.filter((p) => !stalePatternRegExps.has(p.pathRegExp))
+  };
+}
+
 /**
  *
  * @param should returnabsolute
