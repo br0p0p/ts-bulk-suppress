@@ -1,5 +1,5 @@
 import { program } from 'commander';
-import type { ProgramOptions, DiagnosticTsc, ProjectStat } from './types';
+import type { ProgramOptions, DiagnosticTsc, ProjectStat, BulkConfig } from './types';
 import {
   assertDiagnostics,
   createDefaultIgnore,
@@ -18,26 +18,17 @@ import path from 'path';
 
 import { writeJSONSync, readFileSync } from 'fs-extra';
 
-function main(options: ProgramOptions): void {
-  log.setLevel('INFO');
-  if (options.verbose) {
-    log.setLevel('DEBUG');
-  }
-  log.debug(process.cwd());
-  log.debug(options);
-  // // TEMPORARY WORKAROUND: use workspace typescript version by default
-  // // @ts-ignore
-  // //eslint-disable-next-line no-import-assign, @typescript-eslint/no-require-imports
-  // ts = require(path.resolve(options.compiler));
+type CompilerResult = {
+  mergedConfig: BulkConfig & ProgramOptions;
+  configFromFile: BulkConfig;
+  projectRoot: string;
+  compilerHost: ts.CompilerHost;
+  configRelatedErrors: DiagnosticTsc[];
+  projectErrors: DiagnosticTsc[];
+  externalErrors: DiagnosticTsc[];
+};
 
-  log.info(`Using TypeScript compiler version ${ts.version}`);
-
-  if (options.createDefault) {
-    log.info(`Create default .ts-bulk-suppressions.json at ${process.cwd()}`);
-    createDefaultIgnore();
-    return;
-  }
-
+function runCompiler(options: ProgramOptions): CompilerResult {
   const { mergedConfig, configFromFile } = getBulkConfig(options);
   //NOTE: Let's assume projectRoot is tsconfig's dir
   const projectRoot = path.dirname(mergedConfig.project);
@@ -75,25 +66,27 @@ function main(options: ProgramOptions): void {
     host: compilerHost,
     configFileParsingDiagnostics: ts.getConfigFileParsingDiagnostics(configParseResult)
   };
-  const program = ts.createProgram(programOptions);
+  const tscProgram = ts.createProgram(programOptions);
 
   if (mergedConfig.changed) {
     const changedFiles = getChangedFiles(true, true);
 
     // const targetSources = project.getSourceFiles().filter((source) => changedFiles.includes(source.getFilePath()));
-    const targetSources = program.getSourceFiles().filter((source) => changedFiles.includes(source.fileName));
-    const diagnostics = targetSources.flatMap((source) => ts.getPreEmitDiagnostics(program, source));
+    const targetSources = tscProgram
+      .getSourceFiles()
+      .filter((source) => changedFiles.includes(source.fileName));
+    const diagnostics = targetSources.flatMap((source) => ts.getPreEmitDiagnostics(tscProgram, source));
     totalDiagnostic = totalDiagnostic.concat(diagnostics);
   } else if (mergedConfig.files?.length) {
     const absoluteFilePaths = mergedConfig.files.map((file) => path.resolve(file));
-    const targetSources = program
+    const targetSources = tscProgram
       .getSourceFiles()
       .filter((source) => absoluteFilePaths.includes(source.fileName));
-    const diagnostics = targetSources.flatMap((source) => ts.getPreEmitDiagnostics(program, source));
+    const diagnostics = targetSources.flatMap((source) => ts.getPreEmitDiagnostics(tscProgram, source));
 
     totalDiagnostic = totalDiagnostic.concat(diagnostics);
   } else {
-    totalDiagnostic = totalDiagnostic.concat(ts.getPreEmitDiagnostics(program));
+    totalDiagnostic = totalDiagnostic.concat(ts.getPreEmitDiagnostics(tscProgram));
   }
 
   log.debug(totalDiagnostic);
@@ -102,6 +95,36 @@ function main(options: ProgramOptions): void {
     totalDiagnostic,
     projectRoot
   );
+
+  return {
+    mergedConfig,
+    configFromFile,
+    projectRoot,
+    compilerHost,
+    configRelatedErrors,
+    projectErrors,
+    externalErrors
+  };
+}
+
+function main(options: ProgramOptions): void {
+  log.setLevel('INFO');
+  if (options.verbose) {
+    log.setLevel('DEBUG');
+  }
+  log.debug(process.cwd());
+  log.debug(options);
+
+  log.info(`Using TypeScript compiler version ${ts.version}`);
+
+  if (options.createDefault) {
+    log.info(`Create default .ts-bulk-suppressions.json at ${process.cwd()}`);
+    createDefaultIgnore();
+    return;
+  }
+
+  const { mergedConfig, configFromFile, compilerHost, configRelatedErrors, projectErrors, externalErrors } =
+    runCompiler(options);
 
   if (options.genBulkSuppress) {
     const suppressors = createTsBulkSuppress(projectErrors, mergedConfig);
