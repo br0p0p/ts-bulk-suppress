@@ -1,7 +1,10 @@
 import { Diagnostic } from 'ts-morph';
 import ts from 'typescript';
 
+export type SubcommandMode = 'init' | 'suppress' | 'trim' | 'update' | 'check' | undefined;
+
 export type ProgramOptions = {
+  subcommand?: SubcommandMode;
   verbose?: boolean;
   config?: string;
   // compiler: string;

@@ -8,7 +8,9 @@ import {
   deduplicateSuppressors,
   getBulkConfig,
   initStatItem,
-  getChangedFiles
+  getChangedFiles,
+  findStaleSuppressors,
+  trimStaleSuppressors
 } from './tsc-bulk';
 import log from 'loglevel';
 
@@ -117,7 +119,18 @@ function main(options: ProgramOptions): void {
 
   log.info(`Using TypeScript compiler version ${ts.version}`);
 
-  if (options.createDefault) {
+  // Handle deprecated flags
+  if (options.createDefault && !options.subcommand) {
+    log.warn('Warning: --create-default is deprecated. Use "ts-bulk-suppress init" instead.');
+    options.subcommand = 'init';
+  }
+  if (options.genBulkSuppress && !options.subcommand) {
+    log.warn('Warning: --gen-bulk-suppress is deprecated. Use "ts-bulk-suppress suppress" instead.');
+    options.subcommand = 'suppress';
+  }
+
+  // init does not need compiler
+  if (options.subcommand === 'init') {
     log.info(`Create default .ts-bulk-suppressions.json at ${process.cwd()}`);
     createDefaultIgnore();
     return;
@@ -126,19 +139,22 @@ function main(options: ProgramOptions): void {
   const { mergedConfig, configFromFile, compilerHost, configRelatedErrors, projectErrors, externalErrors } =
     runCompiler(options);
 
-  if (options.genBulkSuppress) {
+  // suppress: generate suppressors and write
+  if (options.subcommand === 'suppress' || options.subcommand === 'update') {
     const suppressors = createTsBulkSuppress(projectErrors, mergedConfig);
-
     configFromFile.bulkSuppressors = deduplicateSuppressors([
       ...suppressors,
       ...mergedConfig.bulkSuppressors
     ]);
+  }
 
+  if (options.subcommand === 'suppress') {
     writeJSONSync(mergedConfig.config || '.ts-bulk-suppressions.json', configFromFile, { spaces: 2 });
     log.info('Project patched with bulk-suppressor');
     process.exit(0);
   }
 
+  // trim, update, check, and default all need assertDiagnostics
   const projectStat: ProjectStat = {
     projectErrors: [],
     configRelatedErrors: [],
@@ -147,7 +163,7 @@ function main(options: ProgramOptions): void {
     raw: ''
   };
 
-  process.exitCode = assertDiagnostics(
+  const assertExitCode = assertDiagnostics(
     configRelatedErrors,
     projectErrors,
     externalErrors,
@@ -156,36 +172,118 @@ function main(options: ProgramOptions): void {
     projectStat
   );
 
+  // trim / update: remove stale suppressors and write
+  if (options.subcommand === 'trim' || options.subcommand === 'update') {
+    const stale = findStaleSuppressors(projectStat.statItems);
+    if (stale.length) {
+      stale.forEach((s) => {
+        if (s.type === 'bulk') {
+          log.info(`Removing stale bulk suppressor: ${s.filename} ${s.scopeId} TS${s.code}`);
+        } else {
+          log.info(`Removing stale pattern suppressor: ${s.pathRegExp} [code: ${s.code}]`);
+        }
+      });
+    }
+    const trimmedConfig = trimStaleSuppressors(configFromFile, projectStat.statItems);
+    writeJSONSync(mergedConfig.config || '.ts-bulk-suppressions.json', trimmedConfig, { spaces: 2 });
+    log.info(options.subcommand === 'update' ? 'Suppressions updated' : 'Stale suppressions removed');
+    return;
+  }
+
+  // check: verify file is in sync
+  if (options.subcommand === 'check') {
+    if (assertExitCode !== 0) {
+      process.exitCode = assertExitCode;
+      return;
+    }
+    const stale = findStaleSuppressors(projectStat.statItems);
+    if (stale.length) {
+      stale.forEach((s) => {
+        if (s.type === 'bulk') {
+          log.info(`Stale bulk suppressor: ${s.filename} ${s.scopeId} TS${s.code}`);
+        } else {
+          log.info(`Stale pattern suppressor: ${s.pathRegExp} [code: ${s.code}]`);
+        }
+      });
+      log.info(`Found ${stale.length} stale suppression(s). Run "ts-bulk-suppress trim" to remove them.`);
+      process.exitCode = 3;
+    }
+    return;
+  }
+
+  // Default mode (no subcommand)
+  process.exitCode = assertExitCode;
+
   if (mergedConfig.stat) {
     writeJSONSync(mergedConfig.stat, projectStat, { spaces: 2 });
   }
 }
+
 program
   .option('-v, --verbose', 'Display verbose log')
   .option('--config <path>', 'Path to suppressConfig')
   .option('--stat <path>', 'Display suppress stat')
   .option('--strict-scope', 'Error scopeId would be as deep as possible')
   .option('--changed', 'Only check changed files compared with target_branch')
-  .option('--create-default', 'Create a .ts-bulk-suppressions.json file')
-  .option('--gen-bulk-suppress', 'Patch bulk-suppressor for current project')
+  .option('--create-default', '[deprecated] Use "init" subcommand')
+  .option('--gen-bulk-suppress', '[deprecated] Use "suppress" subcommand')
   .option('--ignore-config-error', 'Ignore config-related errors')
   .option('--ignore-external-error', 'Ignore external errors')
-  // .option(
-  //   '-c, --compiler <path>',
-  //   'Path to typescript.js. By default, uses `node_modules/typescript/lib/typescript.js`.',
-  //   `node_modules/typescript/lib/typescript.js`,
-  // ) // save for future
   .argument('[files...]', 'Target files');
-// .option('-p, --project <file>', "Path to project's tsconfig")
+
+program
+  .command('init')
+  .description('Create a default .ts-bulk-suppressions.json file')
+  .action(() => {
+    const options: ProgramOptions = { ...program.opts(), subcommand: 'init' as const };
+    main(options);
+  });
+
+program
+  .command('suppress')
+  .description('Add suppressions for all current TypeScript errors')
+  .argument('[files...]', 'Target files')
+  .action((files: string[]) => {
+    const options: ProgramOptions = { ...program.opts(), subcommand: 'suppress' as const };
+    if (files.length) options.files = files;
+    main(options);
+  });
+
+program
+  .command('trim')
+  .description('Remove stale suppressions that no longer match any errors')
+  .argument('[files...]', 'Target files')
+  .action((files: string[]) => {
+    const options: ProgramOptions = { ...program.opts(), subcommand: 'trim' as const };
+    if (files.length) options.files = files;
+    main(options);
+  });
+
+program
+  .command('update')
+  .description('Suppress current errors and remove stale suppressions')
+  .argument('[files...]', 'Target files')
+  .action((files: string[]) => {
+    const options: ProgramOptions = { ...program.opts(), subcommand: 'update' as const };
+    if (files.length) options.files = files;
+    main(options);
+  });
+
+program
+  .command('check')
+  .description('Verify suppressions file is in sync (exit 3 if stale suppressions exist)')
+  .argument('[files...]', 'Target files')
+  .action((files: string[]) => {
+    const options: ProgramOptions = { ...program.opts(), subcommand: 'check' as const };
+    if (files.length) options.files = files;
+    main(options);
+  });
+
+// Default action (no subcommand)
+program.action((files: string[]) => {
+  const options: ProgramOptions = program.opts();
+  if (files.length) options.files = files;
+  main(options);
+});
 
 program.parse();
-
-const options: ProgramOptions = program.opts();
-
-const { args } = program;
-
-if (args.length) {
-  options.files = args;
-}
-
-main(options);
